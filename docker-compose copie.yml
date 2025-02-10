@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=pongdb
+      - POSTGRES_USER=ponguser
+      - POSTGRES_PASSWORD=pongpass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ponguser", "-d", "pongdb"]
+      interval: 5s
+      retries: 5
+      timeout: 3s
+
+  redis:
+    image: redis:6
+    ports:
+      - "6379:6379"
+
+  pgadmin:
+    image: dpage/pgadmin4
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@gmail.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    depends_on:
+      - db
+    networks:
+      - default
+
+
+  backend:
+    build: ./backend
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             daphne -b 0.0.0.0 -p 8000 transcendence.asgi:application"
+    volumes:
+      - ./backend:/app
+      - ./frontend:/app/frontend
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    environment:
+      - DB_HOST=db
+      - DB_NAME=pongdb
+      - DB_USER=ponguser
+      - DB_PASSWORD=pongpass
+      - REDIS_HOST=redis
+      - DJANGO_SETTINGS_MODULE=transcendence.settings
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+      - ./frontend/static:/usr/share/nginx/html/static
+      - ./nginx/conf:/etc/nginx/conf.d
+      - static_volume:/usr/share/nginx/html/static/django
+      - media_volume:/usr/share/nginx/html/media
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  static_volume:
+  media_volume:

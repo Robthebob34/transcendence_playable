@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Game</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Orbitron', sans-serif;
+            background-color: #000;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .navbar {
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #00ff88;
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.2);
+        }
+
+        .navbar-brand {
+            color: #00ff88;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            margin-right: 1rem;
+        }
+
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            background-color: #00ff88;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: #000;
+        }
+
+        .username {
+            color: #00ff88;
+        }
+
+        button {
+            border-radius: 5px;
+            background: transparent;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-family: 'Orbitron', sans-serif;
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            background: #00ff88;
+            color: #000;
+            box-shadow: 0 0 15px rgba(0, 255, 136, 0.5);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .game-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .game-id-display {
+            color: #00ff88;
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            border: 1px solid #00ff88;
+            border-radius: 5px;
+            background: rgba(0, 255, 136, 0.1);
+            display: none;
+        }
+
+        .canvas-container {
+            position: relative;
+            margin: 2rem auto;
+            width: 800px;
+            height: 600px;
+            display: none;
+        }
+        
+        #gameCanvas {
+            background-color: rgba(0, 0, 0, 0.3);
+            border: 2px solid #00ff88;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0, 255, 136, 0.2);
+            width: 100%;
+            height: 100%;
+        }
+        
+        .score-container {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            gap: 4rem;
+            font-size: 2rem;
+            color: #00ff88;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        .game-buttons {
+            margin-top: 2rem;
+            display: flex;
+            gap: 1rem;
+        }
+
+        .game-status {
+            margin-top: 1rem;
+            color: #00ff88;
+            font-size: 1.2rem;
+            text-align: center;
+            min-height: 2rem;
+        }
+
+        @keyframes glow {
+            0% { text-shadow: 0 0 5px #00ff88; }
+            50% { text-shadow: 0 0 20px #00ff88; }
+            100% { text-shadow: 0 0 5px #00ff88; }
+        }
+
+        .glow-text {
+            animation: glow 2s infinite;
+        }
+
+        #waitingMessage {
+            display: none;
+            margin-top: 1rem;
+            color: #00ff88;
+            text-align: center;
+        }
+
+        .loading-dots::after {
+            content: '';
+            animation: dots 1.5s infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">PONG</a>
+        <div class="nav-buttons">
+            <div class="user-info">
+                <div class="user-avatar" id="userAvatar"></div>
+                <span id="username"></span>
+            </div>
+            <button id="logoutBtn" class="btn">Logout</button>
+        </div>
+    </nav>
+
+    <div class="game-container">
+        <div class="game-buttons">
+            <button id="createGameBtn" class="btn">Create Game</button>
+            <button id="joinGameBtn" class="btn">Join Game</button>
+        </div>
+        
+        <div id="gameStatus" class="game-status"></div>
+        
+        <div id="gameCanvasContainer" class="canvas-container">
+            <div class="score-container">
+                <div id="player1Score">0</div>
+                <div id="player2Score">0</div>
+            </div>
+            <canvas id="gameCanvas"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let game = null;
+        let gameInitialized = false;
+        
+        function loadGameScript() {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = '/static/js/game.js';
+                script.onload = () => {
+                    console.log('Game script loaded successfully');
+                    resolve();
+                };
+                script.onerror = () => {
+                    console.error('Failed to load game script');
+                    reject(new Error('Failed to load game script'));
+                };
+                document.body.appendChild(script);
+            });
+        }
+
+        async function initializeGame() {
+            if (gameInitialized) {
+                console.log('Game already initialized, skipping...');
+                return;
+            }
+            
+            console.log('Loading game script...');
+            try {
+                await loadGameScript();
+                console.log('Creating game instance...');
+                game = new PongGame();
+                gameInitialized = true;
+                console.log('Game instance created successfully');
+            } catch (error) {
+                console.error('Failed to initialize game:', error);
+                gameInitialized = false;
+            }
+        }
+
+        async function checkAuth() {
+            try {
+                const response = await fetch('/api/users/profile/');
+                if (response.ok) {
+                    const userData = await response.json();
+                    updateUserInfo(userData);
+                    
+                    // Initialize game after successful auth
+                    if (!gameInitialized) {
+                        // Ensure we wait for the DOM to be fully loaded
+                        if (document.readyState === 'complete') {
+                            console.log('DOM is ready, initializing game after auth');
+                            setTimeout(initializeGame, 0); // Use setTimeout to ensure all scripts are loaded
+                        } else {
+                            console.log('Waiting for DOM to be ready...');
+                            window.addEventListener('load', () => {
+                                console.log('Window loaded, initializing game...');
+                                setTimeout(initializeGame, 0);
+                            });
+                        }
+                    }
+                    
+                    return true;
+                } else {
+                    window.location.href = '/login';
+                    return false;
+                }
+            } catch (error) {
+                console.error('Error checking auth:', error);
+                window.location.href = '/login';
+                return false;
+            }
+        }
+
+        function updateUserInfo(userData) {
+            document.getElementById('username').textContent = userData.username;
+            document.getElementById('userAvatar').textContent = userData.username[0].toUpperCase();
+        }
+
+        // Wait for DOM content to load, then check auth
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', checkAuth);
+        } else {
+            checkAuth();
+        }
+
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/users/logout/', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken')
+                    }
+                });
+                
+                if (response.ok) {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('Error logging out:', error);
+            }
+        });
+
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+    </script>
+</body>
+</html>

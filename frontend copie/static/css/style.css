@@ -1,0 +1,22 @@
+#pongCanvas {
+    background: #000;
+    margin: 20px auto;
+    display: block;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.navbar {
+    border-radius: 0 0 10px 10px;
+    margin-bottom: 30px;
+}
+
+#gameContainer {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
