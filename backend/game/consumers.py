@@ -11,8 +11,10 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
+import random
+from django.utils import timezone
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('game')
 User = get_user_model()
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -24,7 +26,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.user_group = None
         self.is_connected = False
         self.last_paddle_update = {}
-        self.paddle_update_interval = 0.008  # 8ms for smoother movement
+        self.paddle_update_interval = 0.025  # 25ms for paddle updates
+        self.state_update_interval = 0.05    # 50ms for state updates
+        self.db_update_interval = 0.2        # Only update DB every 200ms
+        self.pending_updates = {'paddles': {}, 'ball': None}
+        self.last_db_update = 0
+        self.cached_game_state = None
+        self.game_start_time = None
         self.messageCount = 0
         self.lastLogTime = 0
 
@@ -81,36 +89,15 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def update_game_state_sync(self, game_id, new_state, update_type='all'):
-        """Update game state in database
-        
-        Args:
-            game_id: ID of the game to update
-            new_state: New game state
-            update_type: Type of update ('all', 'paddle', 'ball')
-        """
+        """Update game state in database"""
         try:
-            game = Game.objects.get(id=game_id)
-            current_state = game.game_state
-            
-            if update_type == 'paddle':
-                # Only update paddle positions
-                if 'paddles' in new_state:
-                    current_state['paddles'] = new_state['paddles']
-                    logger.info(f"[GAME {game_id}] Updated paddle positions")
-            else:
-                # Update everything
-                current_state = new_state
-            
-            game.game_state = current_state
-            game.save(update_fields=['game_state', 'updated_at'])
-            return True
-            
-        except Game.DoesNotExist:
-            logger.error(f"Game {game_id} not found")
-            return False
+            # Use update instead of get+save to reduce queries
+            Game.objects.filter(id=game_id).update(
+                game_state=new_state,
+                updated_at=timezone.now()
+            )
         except Exception as e:
-            logger.error(f"Error updating game state: {str(e)}", exc_info=True)
-            return False
+            logger.error(f"Error updating game: {str(e)}", exc_info=True)
 
     async def join_game(self):
         """Join an existing game"""
@@ -135,6 +122,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                     self.channel_name
                 )
                 logger.info(f"[GAME {game.id}] Player {self.user.username} added to channel group {self.channel_group_name}")
+
+                # Start game timer when second player joins
+                self.game_start_time = time.time()
 
                 # Broadcast join message with game state from database
                 await self.channel_layer.group_send(
@@ -249,43 +239,186 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def update_ball_position(self):
         """Update ball position"""
         try:
-            game = await self.get_game(self.game.id)
-            if not game or game.status != 'active':
-                return
-
-            game_state = game.game_state
-            ball = game_state['ball']
-
-            # Update ball position
+            current_time = time.time()
+            
+            # Initialize cached state if needed
+            if not self.cached_game_state:
+                self.cached_game_state = self.game.game_state.copy()
+            
+            # Update ball position in cached state
+            ball = self.cached_game_state['ball']
             ball['x'] += ball['dx']
             ball['y'] += ball['dy']
-
-            # Save to database with ball update type
-            await self.update_game_state_sync(game.id, game_state, update_type='ball')
-
-            # Broadcast new state
-            await self.channel_layer.group_send(
-                self.channel_group_name,
-                {
-                    'type': 'game_state_update',
-                    'game_state': game_state
-                }
-            )
-
+            
+            # Check for wall collisions
+            if ball['y'] - ball['radius'] <= 0 or ball['y'] + ball['radius'] >= self.cached_game_state['canvas']['height']:
+                ball['dy'] = -ball['dy']
+                logger.warning("Ball hit top/bottom wall")
+            
+            # Check for scoring
+            if ball['x'] <= 0:
+                # Player 2 scores
+                self.cached_game_state['score']['player2'] += 1
+                logger.warning(f"Score: Player 2 ({self.cached_game_state['score']['player2']}) - Player 1 ({self.cached_game_state['score']['player1']})")
+                
+                # Check for game end
+                if self.cached_game_state['score']['player2'] >= 11:
+                    logger.warning("Player 2 wins!")
+                    await self.end_game('player2')
+                    return
+                
+                self._reset_ball(self.cached_game_state)
+                
+                # Update score in database
+                await self.update_game_state_sync(
+                    self.game.id,
+                    self.cached_game_state,
+                    'all'
+                )
+                
+            elif ball['x'] >= self.cached_game_state['canvas']['width']:
+                # Player 1 scores
+                self.cached_game_state['score']['player1'] += 1
+                logger.warning(f"Score: Player 1 ({self.cached_game_state['score']['player1']}) - Player 2 ({self.cached_game_state['score']['player2']})")
+                
+                # Check for game end
+                if self.cached_game_state['score']['player1'] >= 11:
+                    logger.warning("Player 1 wins!")
+                    await self.end_game('player1')
+                    return
+                
+                self._reset_ball(self.cached_game_state)
+                
+                # Update score in database
+                await self.update_game_state_sync(
+                    self.game.id,
+                    self.cached_game_state,
+                    'all'
+                )
+            
+            # Check for paddle collisions
+            paddles = self.cached_game_state['paddles']
+            for paddle_id, paddle in paddles.items():
+                if (ball['x'] - ball['radius'] <= paddle['x'] + paddle['width'] and
+                    ball['x'] + ball['radius'] >= paddle['x'] and
+                    ball['y'] + ball['radius'] >= paddle['y'] and
+                    ball['y'] - ball['radius'] <= paddle['y'] + paddle['height']):
+                    ball['dx'] = -ball['dx']
+                    # Slightly increase speed on paddle hits
+                    if ball['dx'] > 0:
+                        ball['dx'] = min(ball['dx'] + 0.5, 10)
+                    else:
+                        ball['dx'] = max(ball['dx'] - 0.5, -10)
+                    logger.warning(f"Ball hit {paddle_id} paddle")
+                    break
+            
+            # Only update database periodically
+            if current_time - self.last_db_update >= self.db_update_interval:
+                await self.update_game_state_sync(
+                    self.game.id,
+                    self.cached_game_state,
+                    'all'
+                )
+                self.last_db_update = current_time
+            
+            # Send updates to clients at state_update_interval
+            if current_time - self.lastLogTime >= self.state_update_interval:
+                await self.channel_layer.group_send(
+                    self.channel_group_name,
+                    {
+                        'type': 'game_state_update',
+                        'game_state': self.cached_game_state,
+                        'update_type': 'all'
+                    }
+                )
+                self.lastLogTime = current_time
+                
         except Exception as e:
-            logger.error(f"Error updating ball position: {str(e)}", exc_info=True)
+            logger.error(f"Error in update_ball_position: {str(e)}", exc_info=True)
+
+    def _reset_ball(self, game_state):
+        """Reset ball to center after scoring"""
+        canvas = game_state['canvas']
+        game_state['ball'].update({
+            'x': canvas['width'] / 2,
+            'y': canvas['height'] / 2,
+            'dx': 5 if random.random() > 0.5 else -5,
+            'dy': 5 if random.random() > 0.5 else -5
+        })
 
     async def game_state_update(self, event):
         """Handle game state update"""
         try:
-            game_state = event['game_state']
-            logger.info(f"[GAME {self.game.id if self.game else 'Unknown'}] Sending game state update to client {self.user.username}")
-            await self.send_json({
-                'type': 'game_state_update',
-                'game_state': game_state
-            })
+            if event.get('type') == 'game_end':
+                logger.warning("Received game_end event in game_state_update")
+                await self.send_json(event)
+            else:
+                await self.send_json({
+                    'type': 'game_state_update',
+                    'game_state': event.get('game_state', {}),
+                    'update_type': event.get('update_type', 'all')
+                })
         except Exception as e:
             logger.error(f"Error in game_state_update: {str(e)}", exc_info=True)
+
+    async def end_game(self, winner):
+        """End the game and update the database"""
+        try:
+            logger.warning("=== ENDING GAME ===")
+            logger.warning(f"Winner: {winner}")
+            
+            # Get final game state from database
+            game = await self.get_game(self.game.id)
+            final_score = None
+            if game and game.game_state:
+                final_score = game.game_state['score']
+                logger.warning(f"Final Score: {final_score}")
+            
+            # Calculate game duration
+            if self.game_start_time:
+                game_duration = int(time.time() - self.game_start_time)
+                minutes = game_duration // 60
+                seconds = game_duration % 60
+                duration_formatted = f"{minutes:02d}:{seconds:02d}"
+            else:
+                game_duration = 0
+                duration_formatted = "00:00"
+            
+            # Get winner's user ID
+            winner_id = None
+            if winner == 'player1':
+                winner_id = self.game.player1_id
+            elif winner == 'player2':
+                winner_id = self.game.player2_id
+            
+            # Update game status in database
+            await self.update_game_status('ended', winner_id, game_duration, duration_formatted)
+            
+            # Notify all players that game has ended
+            await self.channel_layer.group_send(
+                self.channel_group_name,
+                {
+                    'type': 'game_end_message',
+                    'winner': winner,
+                    'duration': duration_formatted,
+                    'final_score': final_score
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error ending game: {str(e)}", exc_info=True)
+
+    async def game_end_message(self, event):
+        """Handle game end message"""
+        try:
+            await self.send_json({
+                'type': 'game_end',
+                'winner': event['winner'],
+                'duration': event['duration'],
+                'final_score': event['final_score']
+            })
+        except Exception as e:
+            logger.error(f"Error in game_end_message handler: {str(e)}", exc_info=True)
 
     async def connect(self):
         try:
@@ -501,6 +634,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # Ball collision with top and bottom walls
                 if ball['y'] <= ball['radius'] or ball['y'] >= game_state['canvas']['height'] - ball['radius']:
                     ball['dy'] *= -1
+                    logger.warning("Ball hit wall")
                 
                 # Ball collision with paddles
                 paddles = game_state['paddles']
@@ -511,6 +645,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     ball['y'] <= paddles['player1']['y'] + paddles['player1']['height']):
                     ball['dx'] = abs(ball['dx'])  # Ensure ball moves right
                     ball['dx'] *= 1.1  # Speed up slightly
+                    logger.warning("Ball hit Player 1 paddle")
                 
                 # Right paddle collision
                 if (ball['x'] + ball['radius'] >= paddles['player2']['x'] and
@@ -518,16 +653,38 @@ class GameConsumer(AsyncWebsocketConsumer):
                     ball['y'] <= paddles['player2']['y'] + paddles['player2']['height']):
                     ball['dx'] = -abs(ball['dx'])  # Ensure ball moves left
                     ball['dx'] *= 1.1  # Speed up slightly
+                    logger.warning("Ball hit Player 2 paddle")
                 
                 # Ball out of bounds - scoring
                 if ball['x'] < 0:  # Player 2 scores
                     game_state['score']['player2'] += 1
+                    logger.warning(f"Score: Player 2 ({game_state['score']['player2']}) - Player 1 ({game_state['score']['player1']})")
+                    
+                    # Check for game end
+                    if game_state['score']['player2'] >= 11:
+                        logger.warning("Player 2 wins!")
+                        # Save final state before ending
+                        await self.update_game_state_sync(self.game.id, game_state)
+                        await self.end_game('player2')
+                        return
+                    
                     ball['x'] = game_state['canvas']['width'] / 2
                     ball['y'] = game_state['canvas']['height'] / 2
                     ball['dx'] = -5  # Reset speed and direction
                     ball['dy'] = 5 if ball['dy'] > 0 else -5
+                    
                 elif ball['x'] > game_state['canvas']['width']:  # Player 1 scores
                     game_state['score']['player1'] += 1
+                    logger.warning(f"Score: Player 1 ({game_state['score']['player1']}) - Player 2 ({game_state['score']['player2']})")
+                    
+                    # Check for game end
+                    if game_state['score']['player1'] >= 11:
+                        logger.warning("Player 1 wins!")
+                        # Save final state before ending
+                        await self.update_game_state_sync(self.game.id, game_state)
+                        await self.end_game('player1')
+                        return
+                    
                     ball['x'] = game_state['canvas']['width'] / 2
                     ball['y'] = game_state['canvas']['height'] / 2
                     ball['dx'] = 5  # Reset speed and direction
@@ -571,12 +728,44 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         """Handle disconnect"""
         try:
-            if hasattr(self, 'channel_group_name'):
+            # Only try to remove from group if we have a valid group name
+            if self.channel_group_name:
                 await self.channel_layer.group_discard(
                     self.channel_group_name,
                     self.channel_name
                 )
+            
+            # Only try to remove from user group if we have one
+            if self.user_group:
+                await self.channel_layer.group_discard(
+                    self.user_group,
+                    self.channel_name
+                )
+            
+            self.is_connected = False
+            logger.info(f"User {self.user.username if hasattr(self, 'user') else 'Unknown'} disconnected")
+            
         except Exception as e:
             logger.error(f"Error in disconnect: {str(e)}", exc_info=True)
         finally:
             logger.info(f"User {self.user.username if hasattr(self, 'user') else 'Unknown'} disconnected")
+
+    @database_sync_to_async
+    def update_game_status(self, status, winner=None, duration=None, duration_formatted=None):
+        """Update game status and statistics in database"""
+        try:
+            update_fields = {
+                'status': status,
+                'updated_at': timezone.now()
+            }
+            
+            if winner is not None:
+                update_fields['winner_id'] = winner
+            
+            if duration is not None:
+                update_fields['duration'] = duration
+                update_fields['duration_formatted'] = duration_formatted
+            
+            Game.objects.filter(id=self.game.id).update(**update_fields)
+        except Exception as e:
+            logger.error(f"Error updating game status: {str(e)}", exc_info=True)

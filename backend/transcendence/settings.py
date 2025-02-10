@@ -197,7 +197,6 @@ WEBSOCKET_ACCEPT_ALL = True  # Accept WebSocket upgrade requests
 WEBSOCKET_TIMEOUT = 3600  # 1 hour timeout for WebSocket connections
 
 # CORS settings
-# CORS settings
 CORS_ALLOWED_ORIGINS = ['http://localhost', 'http://localhost:80']
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
@@ -246,40 +245,34 @@ LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-            'style': '{',
-        },
+        'game_format': {
+            'format': '[GAME] %(message)s'
+        }
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+            'level': 'WARNING',
         },
+        'game_console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'game_format',
+            'level': 'WARNING',
+        }
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',
+        'level': 'WARNING',
     },
     'loggers': {
         'django': {
             'handlers': ['console'],
-            'level': 'DEBUG',
-            'propagate': True,
-        },
-        'django.db.backends': {
-            'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': 'WARNING',
             'propagate': False,
         },
-        'daphne': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-        'ws_protocol': {
-            'handlers': ['console'],
-            'level': 'INFO',
+        'game': {
+            'handlers': ['game_console'],
+            'level': 'WARNING',
             'propagate': False,
         },
     },

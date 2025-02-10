@@ -33,6 +33,15 @@ class Game(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     game_state = models.JSONField(default=dict)
+    winner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='games_won',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    duration = models.IntegerField(null=True, blank=True)  # Duration in seconds
+    duration_formatted = models.CharField(max_length=10, null=True, blank=True)  # MM:SS format
 
     class Meta:
         ordering = ['-created_at']
